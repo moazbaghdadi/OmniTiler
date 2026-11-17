@@ -1,8 +1,32 @@
 # Verification
 
+## Fork 0.3.1 — 2026-11-17
+
+- 55 tests pass. Nine new controller/geometry tests cover disabled columns,
+  including all one/two-column combinations, fractional scale, allocation and
+  stacking, live disable/re-enable, hidden workspaces, workspace overflow,
+  keyboard movement, and persistence. The QML test now accepts zeros, rejects
+  all-zero input, and checks one/two-column previews.
+- Existing three-column geometry and allocation tests remain unchanged and pass.
+
+## Fork 0.3.0 — 2026-11-17
+
+- 46 tests pass, including eight preset persistence/validation/workspace tests
+  and an offscreen Quickshell UI test exercising actual mouse clicks, Enter,
+  Escape, invalid totals, fractional values, new/edit flows, and failed saves.
+- The command protocol test verifies success/failure replies carry request IDs.
+- QML lint and plugin validation pass. List/editor captures were inspected;
+  selected preset text uses a contrasting foreground.
+- Installed locally and opened the new panel through the live shell. The helper
+  reports the preset library and the shell logs no panel QML errors. Previously
+  active workspaces were reactivated and application focus restored afterward.
+- The UI integration test requires local Omarchy and Quickshell; other systems
+  skip it. Optional `OMNITILER_TEST_ARTIFACTS` points to an existing directory
+  where it saves list/editor PNG captures.
+
 ## Fork 0.2.0 — 2026-11-17
 
-- 36 automated tests pass, including independent workspace toggles, ten-window
+- 37 automated tests pass, including installer restart ordering, independent workspace toggles, ten-window
   stacking without overlap or workspace moves, closing stack members, inactive
   workspace coordinates, ratio persistence/validation, automatic activation,
   manual opt-outs, two-monitor geometry, interrupted-session recovery, failed
@@ -14,10 +38,18 @@
   `mkdir -p /tmp/omnitiler-qml-imports` then
   `ln -sfn /usr/share/omarchy/shell /tmp/omnitiler-qml-imports/qs` then
   `/usr/lib/qt6/bin/qmllint -I /tmp/omnitiler-qml-imports Service.qml BarWidget.qml`.
-- Read-only local compatibility check: Hyprland 0.56.2. The installed upstream
-  plugin was off. The fork has not replaced that installation or undergone
-  live desktop tests. The apparent application closure reported by the user
-  has not been reproduced or attributed to the plugin.
+- Local compatibility check: Hyprland 0.56.2. The user installed the fork and
+  confirmed basic tiling, additional-window stacking, and workspace switching.
+  Right/middle click initially did nothing: the running shell retained the old
+  QML interface (`preset` IPC returned `Function not found`) despite the installed
+  files matching the fork. Restarting the shell loaded the new interface. Live
+  IPC checks then verified the ratio preset, custom-ratio restoration, and
+  automatic mode; prior active workspaces and preferences were restored.
+  A headless Quickshell harness also dispatched right/middle mouse events to
+  the actual widget and reached both service methods. Physical mouse clicks
+  after the restart still need user confirmation.
+- The apparent application closure reported by the user has not been reproduced
+  or attributed to the plugin. Full live lifecycle/keyboard testing remains pending.
 - Old `live_*.py` scripts below describe the upstream behavior. In particular,
   `live_smoke.py` assumes three slots followed by automatic workspace overflow;
   it is not a validation suite for the fork's default stacking behavior.

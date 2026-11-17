@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "theboxer71.omnitiler",
   "name": "OmniTiler — Ultrawide Window Tiler for Omarchy",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "author": "Fredrick Thorsen; Moaz Baghdadi (fork)",
   "license": "MIT",
   "description": "Independent workspace layouts with adjustable column ratios, vertical stacking, optional workspace overflow, and automatic workspace activation.",

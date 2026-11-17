@@ -1,7 +1,33 @@
 # Changelog
 
+## 0.3.1 — fork, unreleased
+
+- Allow 0% to disable a column, including two-column and single-column layouts.
+- Remove disabled columns from geometry, gaps, allocation, overflow capacity,
+  keyboard navigation, and the settings preview.
+- Reassign existing windows from disabled columns to the remaining columns
+  without moving them to another workspace. Re-enabling a column makes it
+  available for new windows or keyboard moves; existing assignments stay put.
+- Add coverage for all one/two-column combinations, live changes, inactive
+  workspaces, scaling, stacking, overflow, shortcuts, and preset persistence.
+
+## 0.3.0 — fork, unreleased
+
+- Open a native settings panel on right click, with visual ratio previews,
+  preset selection, and Add/Edit forms with live total validation.
+- Save up to 16 shared presets, including edits to the initial 30/40/30 and
+  25/50/25 presets. Apply changes only to the workspace captured when opened.
+- Persist preset edits and the selected workspace's ratios atomically. Existing
+  settings files gain default presets without losing workspace preferences.
+- Keep failed saves in the editor with a visible error; acknowledge commands
+  individually so the panel does not claim success before a disk write completes.
+- Add headless Quickshell tests for mouse actions, Enter/Escape, validation,
+  and failed saves, plus preset storage and workspace-isolation coverage.
+
 ## 0.2.0 — fork, unreleased
 
+- Restart the shell after local installation to replace cached QML click handlers
+  and IPC methods; a rescan alone could leave right/middle click nonfunctional.
 - Keep independent layouts active across workspaces and monitors.
 - Change left click to toggle only the current workspace; IPC `deactivate`
   still restores every managed workspace for shutdown and recovery.

@@ -222,7 +222,7 @@ class LayoutTests(unittest.TestCase):
 
 class SettingsTests(unittest.TestCase):
     def test_invalid_ratios(self):
-        for value in (None, "30,40,30", [30, 70], [0, 50, 50], [-10, 60, 50],
+        for value in (None, "30,40,30", [30, 70], [0, 0, 0], [1, 49, 50], [-10, 60, 50],
                       [True, 49, 50], [float("nan"), 50, 50], [float("inf"), 0, 0]):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 ratios(value)

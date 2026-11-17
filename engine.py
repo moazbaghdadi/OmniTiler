@@ -56,18 +56,22 @@ def geometry(monitor, outer, inner, border, percentages=(30, 40, 30)):
     ot, ore, ob, ol = outer
     _, ir, _, il = inner
     gap = il + ir
-    usable = w - left - right - ol - ore - 6 * border - 2 * gap
+    percentages = ratios(percentages)
+    enabled = {name: value for name, value in zip(SPATIAL_SLOTS, percentages) if value > 0}
+    count = len(enabled)
+    usable = w - left - right - ol - ore - 2 * count * border - (count - 1) * gap
     height = h - top - bottom - ot - ob - 2 * border
     if usable < 30 or height < 30:
-        raise ValueError("Monitor work area is too small for three columns")
-    percentages = ratios(percentages)
-    left_width = round(usable * percentages[0] / 100)
-    right_width = round(usable * percentages[2] / 100)
-    widths = (left_width, usable - left_width - right_width, right_width)
+        raise ValueError("Monitor work area is too small for the selected columns")
+    widths = {name: round(usable * value / 100) for name, value in enabled.items()}
+    # Keep the existing three-column rounding, and fill every usable pixel
+    # when the center is disabled too. Disabled columns consume no gap/border.
+    remainder_slot = "center" if "center" in enabled else max(enabled, key=enabled.get)
+    widths[remainder_slot] += usable - sum(widths.values())
     x = round(monitor["x"] + left + ol + border)
     y = round(monitor["y"] + top + ot + border)
     result = {}
-    for name, width in zip(("left", "center", "right"), widths):
+    for name, width in widths.items():
         result[name] = (x, y, width, round(height))
         x += width + 2 * border + gap
     return result
@@ -255,8 +259,10 @@ class Controller:
                 "counts": counts, "current_workspace": ws,
                 "current_active": ws in self.workspaces,
                 "profile": self.settings.profile(ws), "auto": self.settings.auto,
+                "presets": self.settings.presets,
                 "auto_running": self.auto_running,
-                "profiles": {str(w): self.settings.profile(w) for w in self.workspaces},
+                "profiles": {str(w): self.settings.profile(w) for w in
+                             self.workspaces | {int(k) for k in self.settings.profiles}},
                 "error": self.error}
 
     def current_workspace(self, snap=None):
@@ -339,6 +345,20 @@ class Controller:
                 self.disable_workspace(ws)
             else:
                 self.activate()
+        elif name in {"apply_preset", "save_preset"}:
+            value = message.get("value")
+            if not isinstance(value, dict):
+                raise ValueError("Expected preset settings")
+            workspace = value.get("workspace")
+            if type(workspace) is not int or not 0 < workspace <= 2147483647:
+                raise ValueError("Select a numbered workspace first")
+            if name == "save_preset":
+                self.settings.save_preset(value.get("id"), value.get("ratios"), workspace)
+            else:
+                preset = self.settings.preset(value.get("id"))
+                if preset is None:
+                    raise ValueError("Preset no longer exists")
+                self.settings.update(workspace, ratios=preset["ratios"])
         elif name in {"ratios", "preset", "overflow"}:
             if ws is None:
                 raise ValueError("Select a numbered workspace first")
@@ -347,8 +367,10 @@ class Controller:
             else:
                 value = message.get("value")
                 if name == "preset":
-                    value = ([25, 50, 25] if self.settings.profile(ws)["ratios"] == [30, 40, 30]
-                             else [30, 40, 30])
+                    options = [p["ratios"] for p in self.settings.presets]
+                    current = self.settings.profile(ws)["ratios"]
+                    index = options.index(current) if current in options else -1
+                    value = options[(index + 1) % len(options)]
                 self.settings.update(ws, ratios=value)
         elif name == "auto":
             self.settings.set_auto(message.get("value", not self.settings.auto))
@@ -370,10 +392,11 @@ class Controller:
         c, record = clients[key], self.records[key]
         if c.get("fullscreen"):
             return
-        index = SPATIAL_SLOTS.index(record["slot"]) + (-1 if direction == "l" else 1)
-        if not 0 <= index < len(SPATIAL_SLOTS):
+        spatial = [s for s in SPATIAL_SLOTS if s in self.active_slots(record["workspace"])]
+        index = spatial.index(record["slot"]) + (-1 if direction == "l" else 1)
+        if not 0 <= index < len(spatial):
             return
-        target = SPATIAL_SLOTS[index]
+        target = spatial[index]
         neighbor = next((k for k, r in self.records.items()
                          if r["workspace"] == record["workspace"] and r["slot"] == target), None)
         if neighbor and clients[neighbor].get("fullscreen"):
@@ -392,9 +415,18 @@ class Controller:
         if was_focused:
             self.hypr.focus(c)
 
+    def active_slots(self, workspace):
+        enabled = {s for s, value in zip(SPATIAL_SLOTS, self.settings.profile(workspace)["ratios"])
+                   if value > 0}
+        return tuple(s for s in SLOTS if s in enabled)
+
+    def least_populated(self, workspace):
+        return min(self.active_slots(workspace), key=lambda s: sum(
+            r["workspace"] == workspace and r["slot"] == s for r in self.records.values()))
+
     def vacant(self, workspace):
         occupied = {r["slot"] for r in self.records.values() if r["workspace"] == workspace}
-        return next((s for s in SLOTS if s not in occupied), None)
+        return next((s for s in self.active_slots(workspace) if s not in occupied), None)
 
     def next_empty(self, workspace):
         snap = self.hypr.snapshot()
@@ -421,14 +453,14 @@ class Controller:
         if slot is None:
             if self.settings.profile(workspace)["overflow"] == "workspace":
                 source = workspace
-                workspace, slot = self.next_empty(workspace), "center"
+                workspace = self.next_empty(workspace)
                 # Overflow inherits its parent's preferences until explicitly changed.
                 self.settings.update(workspace, **self.settings.profile(source))
+                slot = self.active_slots(workspace)[0]
                 self.workspace_monitors[workspace] = self.workspace_monitors[source]
                 self.layouts[workspace] = self.layouts[source]
             else:
-                slot = min(SLOTS, key=lambda s: sum(r["workspace"] == workspace and r["slot"] == s
-                                                  for r in self.records.values()))
+                slot = self.least_populated(workspace)
         record = {"identity": list(identity(c)), "workspace": workspace,
                   "slot": slot, "last_place": 0, "attempts": 0}
         self.records[identity(c)] = record
@@ -530,15 +562,16 @@ class Controller:
                     or c.get("pinned") or c.get("grouped")):
                 self.release(c)
                 continue
-            if ws != record["workspace"]:
+            if ws != record["workspace"] or record["slot"] not in self.active_slots(ws):
                 slot = self.vacant(ws)
                 if slot is None:
-                    if self.settings.profile(ws)["overflow"] == "workspace":
+                    if ws != record["workspace"] and self.settings.profile(ws)["overflow"] == "workspace":
                         self.release(c)
                         self.error = "Destination is full; moved window released to normal tiling"
                         continue
-                    slot = min(SLOTS, key=lambda s: sum(r["workspace"] == ws and r["slot"] == s
-                                                      for r in self.records.values()))
+                    # A layout edit keeps existing windows on their workspace,
+                    # even when future opens use workspace overflow.
+                    slot = self.least_populated(ws)
                 record.update(workspace=ws, slot=slot, attempts=0)
                 self.persist()
             # Hidden-workspace coordinates may be transitional; do not release
@@ -692,9 +725,12 @@ def main():
     threading.Thread(target=event_reader, args=(backend, incoming, stop), daemon=True).start()
     last_output = None
 
-    def emit(force=False):
+    def emit(force=False, reply=None):
         nonlocal last_output
-        value = json.dumps(controller.status(), sort_keys=True)
+        state = controller.status()
+        if reply is not None:
+            state["reply"] = reply
+        value = json.dumps(state, sort_keys=True)
         if force or value != last_output:
             print(value, flush=True)
             last_output = value
@@ -707,6 +743,9 @@ def main():
                 kind, payload = incoming.get(timeout=max(0.001, next_tick - time.monotonic()))
             except queue.Empty:
                 kind, payload = "tick", None
+            reply = None
+            if kind == "command" and "request_id" in payload:
+                reply = {"id": payload["request_id"], "ok": True, "error": ""}
             try:
                 if kind == "command":
                     if payload["command"] == "shutdown":
@@ -728,8 +767,10 @@ def main():
                     next_tick = time.monotonic() + 1
             except Exception as e:
                 controller.error = str(e)
+                if reply is not None:
+                    reply.update(ok=False, error=str(e))
                 next_tick = time.monotonic() + 1
-            emit(force=kind == "command")
+            emit(force=kind == "command", reply=reply)
     finally:
         stop.set()
         try:

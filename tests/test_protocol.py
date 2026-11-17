@@ -20,8 +20,8 @@ class ProtocolTests(unittest.TestCase):
             output = io.StringIO()
             commands = '\n'.join([
                 '[]', '{"command":"activate"}',
-                '{"command":"ratios","value":[25,50,25]}',
-                '{"command":"ratios","value":[1,2,3]}',
+                '{"command":"ratios","value":[25,50,25],"request_id":10}',
+                '{"command":"ratios","value":[1,2,3],"request_id":11}',
                 '{"command":"status"}',
             ]) + '\n'
             with patch.object(engine, "Hyprland", return_value=backend), \
@@ -37,6 +37,9 @@ class ProtocolTests(unittest.TestCase):
             self.assertTrue(any("Invalid JSON" in s["error"] for s in states))
             self.assertEqual(states[-1]["profile"]["ratios"], [25, 50, 25])
             self.assertIn("totaling 100", states[-1]["error"])
+            replies = {s["reply"]["id"]: s["reply"] for s in states if "reply" in s}
+            self.assertTrue(replies[10]["ok"])
+            self.assertFalse(replies[11]["ok"])
             self.assertFalse(backend.clients[0]["floating"])
             self.assertFalse(backend.hotkeys)
 

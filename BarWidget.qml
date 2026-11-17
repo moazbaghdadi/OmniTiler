@@ -11,6 +11,10 @@ BarWidget {
     implicitWidth: button.implicitWidth
     implicitHeight: barSize
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+    SettingsPanel { id: settingsPanel; bar: root.bar; anchorItem: button; service: root.service }
+    readonly property bool opened: settingsPanel.opened
+    function open() { settingsPanel.showSettings() }
+    function close() { settingsPanel.close() }
 
     // Service registration can finish after the widget is instantiated.
     function findService() {
@@ -58,7 +62,10 @@ BarWidget {
         tooltipText: TextSafety.escapeMarkup(root.tooltip())
         onPressed: function(mouseButton) {
             if (mouseButton === Qt.LeftButton && root.service) root.service.toggle()
-            if (mouseButton === Qt.RightButton && root.service) root.service.preset()
+            if (mouseButton === Qt.RightButton && root.service) {
+                if (settingsPanel.opened) root.close()
+                else root.open()
+            }
             if (mouseButton === Qt.MiddleButton && root.service) root.service.toggleAuto()
         }
         iconComponent: Component {

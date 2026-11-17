@@ -8,19 +8,32 @@ Item {
     property bool ready: false
     property bool stopping: false
     property var pendingCommands: []
+    property int nextRequest: 0
+    signal completed(int requestId, bool success, string message)
     property var state: ({ active: false, workspaces: [], occupancy: {}, error: "" })
     readonly property bool active: !!state.current_active
 
     function send(command, value) {
         let message = { command: command }
         if (value !== undefined) message.value = value
+        submit(message)
+        return "queued"
+    }
+    function submit(message) {
+        message.request_id = ++nextRequest
         if (!ready) {
             pendingCommands.push(message)
             if (!worker.running) worker.running = true
-            return "starting"
+        } else {
+            worker.write(JSON.stringify(message) + "\n")
         }
-        worker.write(JSON.stringify(message) + "\n")
-        return "ok"
+        return message.request_id
+    }
+    function applyPreset(id, workspace) {
+        return submit({command: "apply_preset", value: {id: id, workspace: workspace}})
+    }
+    function savePreset(id, ratios, workspace) {
+        return submit({command: "save_preset", value: {id: id, ratios: ratios, workspace: workspace}})
     }
     function activate() { return send("activate") }
     function deactivate() { return send("deactivate") }
@@ -40,7 +53,11 @@ Item {
                     root.ready = true
                     let pending = root.pendingCommands
                     root.pendingCommands = []
-                    for (let next of pending) root.send(next.command, next.value)
+                    for (let next of pending) worker.write(JSON.stringify(next) + "\n")
+                    if (root.state.reply) {
+                        let reply = root.state.reply
+                        root.completed(reply.id, reply.ok, reply.error)
+                    }
                 } catch (e) { console.warn("OmniTiler: invalid helper response", e) }
             }
         }

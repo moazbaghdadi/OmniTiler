@@ -16,8 +16,8 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "oma
 TARGET = CONFIG / "plugins" / ID
 
 
-def run(*args, check=True):
-    return subprocess.run(args, check=check, text=True, capture_output=True, timeout=20)
+def run(*args, check=True, timeout=20):
+    return subprocess.run(args, check=check, text=True, capture_output=True, timeout=timeout)
 
 
 def stop():
@@ -81,6 +81,10 @@ def install():
     if any(e.get("id") == "omarchy.clock" for e in center):
         args += ["--after", "omarchy.clock"]
     run(*args)
+    # Rescanning can retain cached QML types at the same plugin URL: the new
+    # Python helper runs, but old widget handlers and IPC methods remain live.
+    # Restart only after the enabled bar entry has been persisted.
+    run("omarchy", "restart", "shell", timeout=60)
     print("Installed OmniTiler beside the clock. Tiling starts off.")
 
 
