@@ -1,0 +1,15 @@
+{
+  "starting": "OmniTiler · Starting…",
+  "workspace": "OmniTiler · Workspace %1 · %2",
+  "on": "On",
+  "off": "Off",
+  "layout": "%1% | %2% | %3% · %4",
+  "stack": "Split columns vertically",
+  "overflow": "Move extra windows to another workspace",
+  "automatic": "Automatic workspaces: %1",
+  "occupancy": "Workspace %1 — Left: %2 · Center: %3 · Right: %4",
+  "move": "Super+Shift+←/→ to move or swap columns",
+  "disable": "Click to disable this workspace",
+  "enable": "Click to tile this workspace",
+  "controls": "Right click: 30/40/30 ↔ 25/50/25 · Middle click: automatic workspaces"
+}

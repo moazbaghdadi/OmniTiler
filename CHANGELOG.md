@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0 — fork, unreleased
+
+- Keep independent layouts active across workspaces and monitors.
+- Change left click to toggle only the current workspace; IPC `deactivate`
+  still restores every managed workspace for shutdown and recovery.
+- Stack additional windows vertically in columns by default. Retain next-empty
+  workspace overflow as an explicit per-workspace option.
+- Persist per-workspace column ratios and overflow preferences outside the
+  plugin directory. Add right-click ratio presets and IPC custom percentages.
+- Add middle-click automatic activation on visited numbered workspaces, with
+  session-local opt-outs for workspaces disabled manually.
+- Stop checking geometry on inactive workspaces; allow five placement retries
+  for slow or size-constrained clients, with a visible error on fallback.
+- Add workspace-aware status, column counts, English translation catalog,
+  tooltip markup escaping, and regression coverage for the helper protocol.
+- Preserve the upstream plugin ID for replacement installs; do not run the
+  upstream and fork concurrently. Existing preview images show upstream 0.1.
+
 ## 0.1.1 — 2026-09-16
 
 - Support Omarchy's Super+Shift+Left/Right for moving and swapping columns.

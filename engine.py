@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from settings import Settings, ratios
 
 SLOTS = ("center", "left", "right")
 SPATIAL_SLOTS = ("left", "center", "right")
@@ -44,7 +45,7 @@ def css_gaps(value):
     return n
 
 
-def geometry(monitor, outer, inner, border):
+def geometry(monitor, outer, inner, border, percentages=(30, 40, 30)):
     """Return content rectangles; borders and pairwise inner gaps are external."""
     w, h = monitor["width"], monitor["height"]
     if monitor.get("transform", 0) % 2:
@@ -59,8 +60,10 @@ def geometry(monitor, outer, inner, border):
     height = h - top - bottom - ot - ob - 2 * border
     if usable < 30 or height < 30:
         raise ValueError("Monitor work area is too small for three columns")
-    side = round(usable * 0.3)
-    widths = (side, usable - 2 * side, side)
+    percentages = ratios(percentages)
+    left_width = round(usable * percentages[0] / 100)
+    right_width = round(usable * percentages[2] / 100)
+    widths = (left_width, usable - left_width - right_width, right_width)
     x = round(monitor["x"] + left + ol + border)
     y = round(monitor["y"] + top + ot + border)
     result = {}
@@ -124,11 +127,15 @@ class Hyprland:
     def snapshot(self):
         return {k: self.query(k) for k in ("clients", "monitors", "workspaces")}
 
-    def dimensions(self, monitor):
+    def dimensions(self, monitor, percentages=(30, 40, 30)):
         outer = css_gaps(self.query("getoption general:gaps_out")["css"])
         inner = css_gaps(self.query("getoption general:gaps_in")["css"])
         border = max(0, self.query("getoption general:border_size")["int"])
-        return geometry(monitor, outer, inner, border)
+        return geometry(monitor, outer, inner, border, percentages)
+
+    def row_gap(self):
+        inner = css_gaps(self.query("getoption general:gaps_in")["css"])
+        return inner[0] + inner[2] + 2 * max(0, self.query("getoption general:border_size")["int"])
 
     def dispatch(self, code, client=None):
         # Guard within the compositor, not just in the earlier JSON snapshot.
@@ -192,8 +199,14 @@ class Journal:
 
 
 class Controller:
-    def __init__(self, backend, journal, clock=time.monotonic):
+    def __init__(self, backend, journal, clock=time.monotonic, settings=None):
         self.hypr, self.journal, self.clock = backend, journal, clock
+        self.settings = settings or Settings()
+        self.workspace_monitors = {}
+        self.layouts = {}
+        self.row_spacing = 0
+        self.auto_running = False
+        self.excluded_workspaces = set()
         self.active = False
         self.monitor = None
         self.workspaces = set()
@@ -230,35 +243,58 @@ class Controller:
 
     def status(self):
         occupancy = {str(w): {s: None for s in SLOTS} for w in sorted(self.workspaces)}
+        counts = {str(w): {s: 0 for s in SLOTS} for w in sorted(self.workspaces)}
         for record in self.records.values():
             ws = str(record["workspace"])
             if ws in occupancy:
                 occupancy[ws][record["slot"]] = record["identity"][0]
+                counts[ws][record["slot"]] += 1
+        monitor, ws = self.current_workspace()
         return {"active": self.active, "monitor": self.monitor,
                 "workspaces": sorted(self.workspaces), "occupancy": occupancy,
+                "counts": counts, "current_workspace": ws,
+                "current_active": ws in self.workspaces,
+                "profile": self.settings.profile(ws), "auto": self.settings.auto,
+                "auto_running": self.auto_running,
+                "profiles": {str(w): self.settings.profile(w) for w in self.workspaces},
                 "error": self.error}
 
+    def current_workspace(self, snap=None):
+        snap = snap or self.hypr.snapshot()
+        monitor = next((m for m in snap["monitors"] if m.get("focused")), None)
+        if not monitor or monitor.get("specialWorkspace", {}).get("id", 0):
+            return None, None
+        ws = monitor["activeWorkspace"]["id"]
+        if ws <= 0 or monitor["activeWorkspace"].get("name", str(ws)) != str(ws):
+            return None, None
+        return monitor, ws
+
     def activate(self):
-        if self.active:
+        snap = self.hypr.snapshot()
+        monitor, ws = self.current_workspace(snap)
+        if ws is None:
+            raise ValueError("Activate on a numbered workspace")
+        if ws in self.workspaces:
             return
-        if self.records:
+        if not self.active and self.records:
             self.deactivate()
             if self.records:
                 raise RuntimeError("Restore pending windows before activating again")
-        snap = self.hypr.snapshot()
-        monitor = next((m for m in snap["monitors"] if m.get("focused")), None)
-        if not monitor or monitor.get("specialWorkspace", {}).get("id", 0):
-            raise ValueError("Switch to a normal numbered workspace first")
-        ws = monitor["activeWorkspace"]["id"]
-        if ws <= 0 or monitor["activeWorkspace"].get("name", str(ws)) != str(ws):
-            raise ValueError("Activate on a numbered workspace")
+        rectangles = self.hypr.dimensions(monitor, self.settings.profile(ws)["ratios"])
+        self.row_spacing = self.hypr.row_gap()
+        if not self.active:
+            self.hypr.enable_hotkeys()
         self.monitor = monitor["name"]
-        self.rectangles = self.hypr.dimensions(monitor)
-        self.hypr.enable_hotkeys()
-        self.workspaces = {ws}
-        self.seen = {identity(c) for c in snap["clients"]}
-        self.locations = {identity(c): (c["monitor"], c["workspace"]["id"])
-                          for c in snap["clients"]}
+        self.rectangles = rectangles
+        self.layouts[ws] = rectangles
+        self.workspace_monitors[ws] = monitor["name"]
+        self.workspaces.add(ws)
+        self.excluded_workspaces.discard(ws)
+        self.auto_running = self.settings.auto
+        if not self.active:
+            self.seen = {identity(c) for c in snap["clients"]}
+            self.locations = {identity(c): (c["monitor"], c["workspace"]["id"])
+                              for c in snap["clients"]}
         self.active, self.error = True, ""
         candidates = sorted((c for c in snap["clients"] if eligible(c)
                              and c["workspace"]["id"] == ws and c["monitor"] == monitor["id"]),
@@ -269,6 +305,58 @@ class Controller:
             target = self.admit(c, target, follow=False)
         if candidates:
             self.hypr.focus(candidates[0])
+
+    def disable_workspace(self, ws):
+        clients = {identity(c): c for c in self.hypr.query("clients")}
+        for key, record in list(self.records.items()):
+            if record["workspace"] == ws:
+                if key in clients:
+                    self.release(clients[key])
+                else:
+                    del self.records[key]
+        if any(r["workspace"] == ws for r in self.records.values()):
+            raise RuntimeError("Could not restore this workspace; retry disabling it")
+        self.workspaces.discard(ws)
+        self.workspace_monitors.pop(ws, None)
+        self.layouts.pop(ws, None)
+        self.excluded_workspaces.add(ws)
+        self.active = bool(self.workspaces)
+        self.persist()
+        if not self.active:
+            self.hypr.clear_hotkeys()
+
+    def command(self, message):
+        name = message.get("command")
+        if name != "status":
+            self.error = ""
+        _, ws = self.current_workspace()
+        if name == "deactivate":
+            self.deactivate()
+        elif name == "activate":
+            self.activate()
+        elif name == "toggle":
+            if ws in self.workspaces:
+                self.disable_workspace(ws)
+            else:
+                self.activate()
+        elif name in {"ratios", "preset", "overflow"}:
+            if ws is None:
+                raise ValueError("Select a numbered workspace first")
+            if name == "overflow":
+                self.settings.update(ws, overflow=message.get("value"))
+            else:
+                value = message.get("value")
+                if name == "preset":
+                    value = ([25, 50, 25] if self.settings.profile(ws)["ratios"] == [30, 40, 30]
+                             else [30, 40, 30])
+                self.settings.update(ws, ratios=value)
+        elif name == "auto":
+            self.settings.set_auto(message.get("value", not self.settings.auto))
+            self.auto_running = self.settings.auto
+            self.excluded_workspaces.clear()
+        elif name != "status":
+            raise ValueError("Unknown command")
+        self.reconcile()
 
     def move_slot(self, direction, address, stable):
         """Honor a keypress for its captured window, even if focus changes later."""
@@ -310,15 +398,16 @@ class Controller:
 
     def next_empty(self, workspace):
         snap = self.hypr.snapshot()
+        monitor = self.workspace_monitors[workspace]
         occupied = {c["workspace"]["id"] for c in snap["clients"] if c.get("mapped")}
-        other = {w["id"] for w in snap["workspaces"] if w["monitor"] != self.monitor}
+        other = {w["id"] for w in snap["workspaces"] if w["monitor"] != monitor}
         # Respect concrete numeric workspace-to-monitor rules, even when empty.
         for rule in self.hypr.rules():
             name = str(rule.get("workspaceString", ""))
-            if name.isdigit() and rule.get("monitor") not in (None, "", self.monitor):
+            if name.isdigit() and rule.get("monitor") not in (None, "", monitor):
                 other.add(int(name))
         target = workspace + 1
-        while target in occupied or target in other or any(
+        while target in occupied or target in other or target in self.workspaces or any(
                 r["workspace"] == target for r in self.records.values()):
             target += 1
         if target > 2147483647:
@@ -330,7 +419,16 @@ class Controller:
             return workspace
         slot = self.vacant(workspace)
         if slot is None:
-            workspace, slot = self.next_empty(workspace), "center"
+            if self.settings.profile(workspace)["overflow"] == "workspace":
+                source = workspace
+                workspace, slot = self.next_empty(workspace), "center"
+                # Overflow inherits its parent's preferences until explicitly changed.
+                self.settings.update(workspace, **self.settings.profile(source))
+                self.workspace_monitors[workspace] = self.workspace_monitors[source]
+                self.layouts[workspace] = self.layouts[source]
+            else:
+                slot = min(SLOTS, key=lambda s: sum(r["workspace"] == workspace and r["slot"] == s
+                                                  for r in self.records.values()))
         record = {"identity": list(identity(c)), "workspace": workspace,
                   "slot": slot, "last_place": 0, "attempts": 0}
         self.records[identity(c)] = record
@@ -340,7 +438,7 @@ class Controller:
         try:
             moved = c["workspace"]["id"] != workspace
             if moved:
-                self.hypr.move(c, workspace, self.monitor)
+                self.hypr.move(c, workspace, self.workspace_monitors[workspace])
             if not c.get("fullscreen"):
                 self.place(c, record)
             if moved and follow:
@@ -353,7 +451,18 @@ class Controller:
     def place(self, c, record):
         record["last_place"] = self.clock()
         record["attempts"] += 1
-        self.hypr.place(c, self.rectangles[record["slot"]])
+        self.hypr.place(c, self.rectangle(record))
+
+    def rectangle(self, record):
+        x, y, width, height = self.layouts[record["workspace"]][record["slot"]]
+        peers = [r for r in self.records.values() if r["workspace"] == record["workspace"]
+                 and r["slot"] == record["slot"]]
+        index, count = peers.index(record), len(peers)
+        usable = height - (count - 1) * self.row_spacing
+        start, end = round(usable * index / count), round(usable * (index + 1) / count)
+        if end - start < 30:
+            raise ValueError("Too many windows for this column; use workspace overflow or move a window")
+        return x, y + start + index * self.row_spacing, width, end - start
 
     def release(self, c):
         key = identity(c)
@@ -367,6 +476,7 @@ class Controller:
 
     def deactivate(self):
         self.active = False
+        self.auto_running = False
         self.error = ""
         self.hypr.clear_hotkeys()
         clients = {identity(c): c for c in self.hypr.query("clients")}
@@ -377,25 +487,38 @@ class Controller:
                 del self.records[key]
         self.persist()
         self.workspaces.clear()
+        self.workspace_monitors.clear()
+        self.layouts.clear()
+        self.excluded_workspaces.clear()
         self.monitor = None
         self.pending_opens.clear()
 
     def reconcile(self):
+        snap = self.hypr.snapshot()
+        _, current = self.current_workspace(snap)
+        if (self.auto_running and current is not None and current not in self.workspaces
+                and current not in self.excluded_workspaces):
+            self.activate()
+            snap = self.hypr.snapshot()
         if not self.active:
             return
-        snap = self.hypr.snapshot()
-        monitor = next((m for m in snap["monitors"] if m["name"] == self.monitor), None)
-        if not monitor:
-            self.deactivate()
-            self.error = "Monitor disconnected; normal tiling restored"
+        monitors = {m["name"]: m for m in snap["monitors"]}
+        visible = {m["activeWorkspace"]["id"] for m in monitors.values()
+                   if not m.get("specialWorkspace", {}).get("id", 0)}
+        self.row_spacing = self.hypr.row_gap()
+        for ws in list(self.workspaces):
+            assigned = next((w["monitor"] for w in snap["workspaces"] if w["id"] == ws),
+                            self.workspace_monitors[ws])
+            if assigned not in monitors:
+                self.disable_workspace(ws)
+                self.error = "Monitor disconnected; its workspaces restored to normal tiling"
+                continue
+            self.workspace_monitors[ws] = assigned
+            self.layouts[ws] = self.hypr.dimensions(monitors[assigned], self.settings.profile(ws)["ratios"])
+        if not self.active:
             return
-        rectangles = self.hypr.dimensions(monitor)
-        geometry_changed = rectangles != self.rectangles
-        self.rectangles = rectangles
+        self.rectangles = self.layouts.get(current, next(iter(self.layouts.values())))
         clients = {identity(c): c for c in snap["clients"]}
-        # Workspaces deliberately moved off this monitor leave the managed set.
-        departed = {w["id"] for w in snap["workspaces"] if w["monitor"] != self.monitor}
-        self.workspaces.difference_update(departed)
         for key, record in list(self.records.items()):
             c = clients.get(key)
             if not c:
@@ -403,32 +526,45 @@ class Controller:
                 self.persist()
                 continue
             ws = c["workspace"]["id"]
-            if (ws not in self.workspaces or c["monitor"] != monitor["id"]
+            if (ws not in self.workspaces
                     or c.get("pinned") or c.get("grouped")):
                 self.release(c)
                 continue
             if ws != record["workspace"]:
                 slot = self.vacant(ws)
                 if slot is None:
-                    self.release(c)
-                    self.error = "Destination is full; moved window released to normal tiling"
-                    continue
+                    if self.settings.profile(ws)["overflow"] == "workspace":
+                        self.release(c)
+                        self.error = "Destination is full; moved window released to normal tiling"
+                        continue
+                    slot = min(SLOTS, key=lambda s: sum(r["workspace"] == ws and r["slot"] == s
+                                                      for r in self.records.values()))
                 record.update(workspace=ws, slot=slot, attempts=0)
                 self.persist()
+            # Hidden-workspace coordinates may be transitional; do not release
+            # those windows for failing a visible-screen geometry check.
+            if ws not in visible:
+                record["attempts"] = 0
+                continue
             if c.get("fullscreen"):
                 record["attempts"] = 0
                 continue
-            desired = self.rectangles[record["slot"]]
+            try:
+                desired = self.rectangle(record)
+            except ValueError as e:
+                self.error = str(e)
+                self.release(c)
+                continue
+            if record.get("target") != desired:
+                record.update(target=desired, attempts=0)
             actual = tuple(c["at"] + c["size"])
             matches = c["floating"] and all(abs(a - b) <= 1 for a, b in zip(actual, desired))
             if matches:
                 record["attempts"] = 0
                 continue
-            if geometry_changed:
-                record["attempts"] = 0
             if self.clock() - record["last_place"] < 0.8:
                 continue  # Let compositor animations / client configure acks settle.
-            if record["attempts"] >= 2:
+            if record["attempts"] >= 5:
                 self.release(c)
                 self.error = "A window could not fit its slot and was released to normal tiling"
                 continue
@@ -447,7 +583,7 @@ class Controller:
         destinations = {}
         for c in new:
             if (eligible(c) and c["workspace"]["id"] in self.workspaces
-                    and c["monitor"] == monitor["id"]):
+                    and c["monitor"] == monitors[self.workspace_monitors[c["workspace"]["id"]]]["id"]):
                 source = c["workspace"]["id"]
                 follow = (identity(c) not in self.seen or
                           self.hypr.query("activewindow").get("address") == c["address"])
@@ -482,6 +618,7 @@ def event_reader(backend, incoming, stop):
                                 incoming.put(("move", parts[1:]))
                         elif name in {"closewindow", "movewindowv2", "fullscreen", "configreloaded",
                                       "monitorremoved", "monitoradded", "moveworkspacev2",
+                                      "workspace", "workspacev2", "focusedmon", "activespecial",
                                       "changefloatingmode", "togglegroup", "pin"}:
                             incoming.put(("event", name))
         except OSError:
@@ -526,7 +663,9 @@ def main():
     # A process from an old QML instance can be finishing cleanup during reload.
     lock = (state / "lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX)
+    settings_path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omnitiler/settings.json"
     controller = Controller(backend, Journal(state / "windows.json"))
+    controller.settings = Settings(settings_path)
     read_fd, lifetime_fd = os.pipe()
     watcher = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()),
                                 "--guardian", str(read_fd)], pass_fds=(read_fd,),
@@ -535,17 +674,19 @@ def main():
     os.close(read_fd)
     incoming = queue.Queue()
     stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: incoming.put(("command", "shutdown")))
-    signal.signal(signal.SIGINT, lambda *_: incoming.put(("command", "shutdown")))
+    signal.signal(signal.SIGTERM, lambda *_: incoming.put(("command", {"command": "shutdown"})))
+    signal.signal(signal.SIGINT, lambda *_: incoming.put(("command", {"command": "shutdown"})))
 
     def read_commands():
         for line in sys.stdin:
             try:
-                command = json.loads(line).get("command")
+                command = json.loads(line)
+                if not isinstance(command, dict) or not isinstance(command.get("command"), str):
+                    raise ValueError("Expected an object with a command string")
                 incoming.put(("command", command))
             except (ValueError, AttributeError):
                 incoming.put(("invalid", "Invalid JSON command"))
-        incoming.put(("command", "shutdown"))
+        incoming.put(("command", {"command": "shutdown"}))
 
     threading.Thread(target=read_commands, daemon=True).start()
     threading.Thread(target=event_reader, args=(backend, incoming, stop), daemon=True).start()
@@ -568,14 +709,9 @@ def main():
                 kind, payload = "tick", None
             try:
                 if kind == "command":
-                    if payload == "shutdown":
+                    if payload["command"] == "shutdown":
                         break
-                    if payload == "toggle":
-                        payload = "deactivate" if controller.active else "activate"
-                    if payload in {"activate", "deactivate"}:
-                        getattr(controller, payload)()
-                    elif payload != "status":
-                        raise ValueError("Unknown command")
+                    controller.command(payload)
                 elif kind == "invalid":
                     raise ValueError(payload)
                 elif kind == "open" and controller.active:
@@ -601,6 +737,7 @@ def main():
         finally:
             os.close(lifetime_fd)
             fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
             watcher.wait(timeout=8)
 
 

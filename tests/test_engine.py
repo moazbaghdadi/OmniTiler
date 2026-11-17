@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import Controller, Journal, css_gaps, geometry, identity
+from settings import Settings
 
 
 MONITOR = {"id": 0, "name": "DP-2", "width": 3440, "height": 1440, "scale": 1,
@@ -49,16 +50,20 @@ class FakeHypr:
         self.hotkeys = False
 
     def snapshot(self):
-        workspaces = [{"id": n, "monitor": "DP-2"} for n in
-                      {c["workspace"]["id"] for c in self.clients}]
+        names = {m["id"]: m["name"] for m in self.monitors}
+        assignments = {c["workspace"]["id"]: names.get(c["monitor"], "DP-2") for c in self.clients}
+        workspaces = [{"id": n, "monitor": name} for n, name in assignments.items()]
         return copy.deepcopy(dict(clients=self.clients, monitors=self.monitors,
                                   workspaces=workspaces + self.extra_workspaces))
 
     def rules(self):
         return self.workspace_rules
 
-    def dimensions(self, m):
-        return geometry(m, [10]*4, [5]*4, 1)
+    def dimensions(self, m, percentages=(30, 40, 30)):
+        return geometry(m, [10]*4, [5]*4, 1, percentages)
+
+    def row_gap(self):
+        return 12
 
     def live(self, c):
         return next((w for w in self.clients if identity(c) == identity(w)), None)
@@ -125,6 +130,7 @@ class ControllerTests(unittest.TestCase):
         self.c.reconcile()
 
     def test_focus_first_and_initial_overflow(self):
+        self.c.settings.update(1, overflow="workspace")
         self.hypr.clients = [window(n) for n in range(1, 8)]
         self.hypr.clients[4]["focusHistoryID"] = 0
         self.c.activate()
@@ -148,6 +154,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.c.records[identity(self.hypr.clients[1])]["slot"], "right")
 
     def test_burst_and_skip_occupied_or_other_monitor(self):
+        self.c.settings.update(1, overflow="workspace")
         self.hypr.clients = [window(99, 2)]
         self.hypr.extra_workspaces = [{"id": 3, "monitor": "HDMI-A-1"}]
         self.hypr.workspace_rules = [{"workspaceString": "4", "monitor": "HDMI-A-1"}]
@@ -210,8 +217,8 @@ class ControllerTests(unittest.TestCase):
         self.hypr.clients = [window(1)]
         self.hypr.stubborn = True
         self.c.activate()
-        self.tick()
-        self.tick()
+        for _ in range(7):
+            self.tick()
         count = len(self.hypr.calls)
         for _ in range(5):
             self.tick()

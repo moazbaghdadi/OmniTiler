@@ -1,34 +1,36 @@
 # OmniTiler — Ultrawide Window Tiler for Omarchy
 
-Give your main window the center stage. OmniTiler brings fixed **30 / 40 / 30**
-three-column window tiling to ultrawide Omarchy desktops, with automatic
-workspace overflow and a toggle beside your clock.
-
-![OmniTiler: 30/40/30 ultrawide tiling, automatic overflow, and keyboard controls](preview.png)
-
-Promotional illustration. See the [actual desktop screenshot](docs/preview.png)
-and [light-theme screenshot](docs/preview-light.png) for the running plugin.
+This fork adds independent workspace layouts, configurable column widths, and
+vertical stacking to [PixDevsApps/OmniTiler](https://github.com/PixDevsApps/OmniTiler).
+The existing preview images show the upstream version.
 
 ## How it works
 
-Click the three-column bar icon on a numbered workspace. Your focused window
-takes the **40% center**; the next two windows take the **30% left** and **30%
-right**, in that order. Existing windows use recent-focus order. Empty columns
-stay empty, and closing a window leaves its neighbors in place.
+Enable tiling on a numbered workspace. Your focused window takes the center;
+the next two take the left and right columns. Each workspace stays enabled
+independently when you switch elsewhere or toggle another workspace.
 
-The fourth window goes to the **next empty numbered workspace on the same
-monitor**, and focus follows it. That workspace continues the center → left →
-right pattern. Other workspaces and monitors keep their normal behavior.
-Returning to a full managed workspace and opening another window creates a
-new empty overflow workspace; it does not search partially filled workspaces.
+The default proportions are **30 / 40 / 30**. Right-click the bar icon to switch
+the current workspace between **30 / 40 / 30** and **25 / 50 / 25**. Custom
+percentages are available through IPC below, including asymmetric layouts.
+Ratios apply after subtracting borders, gaps, and reserved panel space.
 
-Click again to restore normal Hyprland tiling on the windows' current
-workspaces. The bar icon stays installed, but tiling starts **off** after login
-or a shell/plugin reload.
+Additional windows stay on the same workspace by default. Columns split
+vertically, choosing the least populated column (center first on ties). Closing
+a stacked window expands its remaining neighbors. No application is closed to
+make room. Applications that cannot accept their assigned size eventually
+return to normal Hyprland tiling, with an error in the tooltip.
 
-The icon and tooltip follow your Omarchy theme. Windows keep their usual
-borders, colors, rounding, and animations. Ratios apply to usable window
-width after subtracting borders, configured gaps, and reserved panel space.
+Optional `workspace` overflow sends new excess windows to the next empty
+numbered workspace on the same monitor. It inherits the source workspace's
+preferences. Changing overflow mode affects future allocations; it does not
+move existing windows back or redistribute existing stacks.
+
+Middle-click enables automatic tiling as you visit normal numbered workspaces.
+Turning a workspace off excludes it for this session until you explicitly
+activate it or toggle automatic mode again. Turning automatic mode off keeps
+already-managed workspaces enabled. Tiling starts off after login or shell/plugin
+reload; saved preferences are reused on the next activation.
 
 ## Requirements
 
@@ -42,10 +44,14 @@ does not edit Hyprland configuration or require root access.
 
 ## Install
 
-Install from [PixDevsApps/OmniTiler](https://github.com/PixDevsApps/OmniTiler):
+The fork retains the upstream plugin ID. Use one installation only; the local
+installer below replaces that ID's installed copy. The development changes must
+be committed and pushed before installing them directly from the fork URL.
+
+For a published version of the fork:
 
 ```sh
-omarchy plugin add https://github.com/PixDevsApps/OmniTiler --enable
+omarchy plugin add https://github.com/moazbaghdadi/OmniTiler --enable
 omarchy plugin enable theboxer71.omnitiler --section center --after omarchy.clock
 ```
 
@@ -63,7 +69,7 @@ omarchy plugin remove theboxer71.omnitiler
 Clone the repository, then run the installer:
 
 ```sh
-git clone https://github.com/PixDevsApps/OmniTiler.git
+git clone https://github.com/moazbaghdadi/OmniTiler.git
 cd OmniTiler
 python3 manage.py install
 ```
@@ -79,9 +85,12 @@ the latter installs a copy and is updated by rerunning `manage.py install`.
 
 ## Controls and IPC
 
-- **Left click:** toggle this workspace and its overflow set.
-- **Hover:** see managed workspaces, occupied slots, and any error.
-- One activation set runs at a time. Switch off before activating elsewhere.
+- **Left click:** toggle only the current workspace.
+- **Right click:** switch the current workspace's ratio preset.
+- **Middle click:** toggle automatic activation of visited workspaces.
+- **Hover:** see current ratios, overflow mode, managed workspaces, window counts,
+  and any placement error.
+- **IPC `deactivate`:** restore all managed workspaces and stop automatic activation.
 
 ### Omarchy keyboard shortcuts
 
@@ -92,9 +101,10 @@ the latter installs a copy and is updated by rerunning `manage.py install`.
 | **Super+Shift+1…0** | Move a window to the chosen workspace. |
 | **Super+Shift+Alt+1…0** | Move a window to a workspace without following it. |
 
+With stacked columns, a move swaps with the first window in the adjacent column.
 Moving between columns also adjusts the window to that column's width. Empty
-columns accept moves, and outer edges do not wrap. Because this is a single
-row, there are no above/below columns; the Up/Down bindings are unchanged.
+columns accept moves, and outer edges do not wrap. The plugin only overrides
+horizontal column movement; the Up/Down bindings are unchanged.
 Moving an ordinary window into a managed workspace adopts an available slot;
 moving it out returns it to normal tiling. Silent moves remain silent.
 
@@ -111,14 +121,31 @@ omarchy-shell omnitiler activate
 omarchy-shell omnitiler deactivate
 omarchy-shell omnitiler toggle
 omarchy-shell omnitiler status
+omarchy-shell omnitiler preset
+omarchy-shell omnitiler ratios 25 50 25
+omarchy-shell omnitiler ratios 20 45 35
+omarchy-shell omnitiler overflow stack
+omarchy-shell omnitiler overflow workspace
+omarchy-shell omnitiler automatic true
+omarchy-shell omnitiler automatic false
 ```
 
-Commands acknowledge asynchronously. `status` returns JSON with `active`,
-`monitor`, `workspaces`, `occupancy`, and `error`.
+Commands acknowledge asynchronously; inspect `status` for the resulting state
+and any validation error. Percentages must each be at least 5 and total 100.
+`status` retains `active` (any managed workspace), `monitor` (last activation),
+`workspaces`, `occupancy` (one address per occupied column for compatibility),
+and `error`. New fields include `current_workspace`, `current_active`, `counts`
+(window counts per column), `profile`, `profiles`, `auto`, and `auto_running`.
+
+Preferences are written atomically to `$XDG_CONFIG_HOME/omnitiler/settings.json`
+(default `~/.config/omnitiler/settings.json`). Ratios and overflow are keyed by
+numbered workspace; the automatic-mode preference is global. They survive plugin
+updates and removal. Active window assignments remain session-local. Use IPC to
+change preferences while running; manual file edits are read on helper restart.
 
 ## Window handling
 
-- Each ordinary toplevel window occupies a slot, including multiple windows
+- Each ordinary toplevel window occupies a column or a row within it, including multiple windows
   from the same application.
 - Already-floating windows, floating dialogs, hidden windows, pinned windows,
   window groups, and special workspaces are excluded. Ordinary non-floating
@@ -131,9 +158,12 @@ Commands acknowledge asynchronously. `status` returns JSON with `active`,
   side column. Dragging/resizing managed windows is reconciled back to their
   assigned slots; turn OmniTiler off for free placement.
 - Monitor scale, position, rotation, reserved space, and configured general
-  gaps are included. Per-workspace gap overrides are not supported in v0.1.
-- Disconnecting the managed monitor releases its windows. Changing the
-  active monitor alone does not expand the managed set.
+  gaps are included. Per-workspace gap overrides are not supported.
+- Workspaces can be enabled on multiple monitors. Moving a whole managed
+  workspace to another monitor recalculates its layout. Disconnecting a monitor
+  releases workspaces still assigned to it; unaffected monitors keep their layouts.
+- Inactive-workspace geometry is not used to reject windows. On return, the
+  controller reconciles the visible workspace to its saved slot assignments.
 
 ## Lifecycle and recovery
 
@@ -158,10 +188,14 @@ shell configuration over newer settings.
 
 ## Development
 
+Node.js is needed only for the tooltip JavaScript test.
+
 ```sh
 python3 -m unittest discover -s tests -v
 omarchy plugin validate .
-qmllint -I /usr/share/omarchy/shell Service.qml BarWidget.qml
+mkdir -p /tmp/omnitiler-qml-imports
+ln -sfn /usr/share/omarchy/shell /tmp/omnitiler-qml-imports/qs
+/usr/lib/qt6/bin/qmllint -I /tmp/omnitiler-qml-imports Service.qml BarWidget.qml
 ```
 
 `engine.py` separates the geometry/allocation controller from the compositor
@@ -170,7 +204,10 @@ JSON on stdin/stdout. Standard input EOF or SIGTERM requests cleanup. The
 helper listens to Hyprland's event socket and reconciles once per second while
 active, including recovery from missed events. It performs no network calls.
 
-Opt-in live desktop checks (temporarily open and close demonstration windows):
+Historical upstream live checks (not yet adapted to default stacking; see
+[verification](docs/VERIFICATION.md)). They temporarily open/close demonstration
+windows and some also change shell state, so do not use them as the fork's
+acceptance suite:
 
 ```sh
 python3 tests/live_smoke.py --run

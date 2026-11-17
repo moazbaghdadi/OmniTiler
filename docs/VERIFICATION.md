@@ -1,4 +1,28 @@
-# Verification — 2026-09-16
+# Verification
+
+## Fork 0.2.0 — 2026-11-17
+
+- 36 automated tests pass, including independent workspace toggles, ten-window
+  stacking without overlap or workspace moves, closing stack members, inactive
+  workspace coordinates, ratio persistence/validation, automatic activation,
+  manual opt-outs, two-monitor geometry, interrupted-session recovery, failed
+  cleanup retry, pending window events, helper command parsing and EOF cleanup.
+- The tooltip escaping test executes the actual QML JavaScript helper with Node.js
+  (development-only dependency).
+- Python compilation and Omarchy manifest validation pass.
+- QML lint passes with the shell resolved as the `qs` module:
+  `mkdir -p /tmp/omnitiler-qml-imports` then
+  `ln -sfn /usr/share/omarchy/shell /tmp/omnitiler-qml-imports/qs` then
+  `/usr/lib/qt6/bin/qmllint -I /tmp/omnitiler-qml-imports Service.qml BarWidget.qml`.
+- Read-only local compatibility check: Hyprland 0.56.2. The installed upstream
+  plugin was off. The fork has not replaced that installation or undergone
+  live desktop tests. The apparent application closure reported by the user
+  has not been reproduced or attributed to the plugin.
+- Old `live_*.py` scripts below describe the upstream behavior. In particular,
+  `live_smoke.py` assumes three slots followed by automatic workspace overflow;
+  it is not a validation suite for the fork's default stacking behavior.
+
+## Historical upstream verification — 2026-09-16
 
 Environment: Omarchy 4.0.4-1, Hyprland 0.56.2, built-in Quickshell bar,
 3440×1440 DP-2 ultrawide at scale 1. Original theme: Osaka Jade.
