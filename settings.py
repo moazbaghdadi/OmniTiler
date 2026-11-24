@@ -19,6 +19,8 @@ class Settings:
     def __init__(self, path=None):
         self.path = Path(path) if path else None
         self.auto = False
+        # Workspaces the user left tiled; re-activated after restarts and reloads.
+        self.enabled = set()
         self.profiles = {}
         self.presets = [{"id": "balanced", "ratios": [30, 40, 30]},
                         {"id": "wide-center", "ratios": [25, 50, 25]}]
@@ -27,6 +29,11 @@ class Settings:
             if type(data.get("auto", False)) is not bool:
                 raise ValueError("auto must be true or false")
             self.auto = data.get("auto", False)
+            enabled = data.get("enabled", [])
+            if not isinstance(enabled, list) or any(
+                    type(n) is not int or not 0 < n <= 2147483647 for n in enabled):
+                raise ValueError("enabled must list positive numbered workspaces")
+            self.enabled = set(enabled)
             if "presets" in data:
                 self.presets = self.validate_presets(data["presets"])
             for workspace, profile in data.get("workspaces", {}).items():
@@ -92,13 +99,23 @@ class Settings:
         self.save(self.profiles, enabled)
         self.auto = enabled
 
-    def save(self, profiles, auto, presets=None):
+    def remember(self, workspaces, enabled=True):
+        """Add or remove workspaces from the persisted enabled set; write only on change."""
+        values = {int(w) for w in workspaces}
+        result = (self.enabled | values) if enabled else (self.enabled - values)
+        if result != self.enabled:
+            self.save(self.profiles, self.auto, enabled=result)
+            self.enabled = result
+
+    def save(self, profiles, auto, presets=None, enabled=None):
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
             with temporary.open("w") as stream:
                 json.dump({"auto": auto, "workspaces": profiles,
-                           "presets": self.presets if presets is None else presets}, stream, indent=2)
+                           "presets": self.presets if presets is None else presets,
+                           "enabled": sorted(self.enabled if enabled is None else enabled)},
+                          stream, indent=2)
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())

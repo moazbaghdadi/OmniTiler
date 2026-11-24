@@ -231,6 +231,9 @@ class Controller:
         self.row_spacing = 0
         self.auto_running = False
         self.excluded_workspaces = set()
+        # Managed workspaces whose monitor is gone (asleep/unplugged). Their
+        # windows are left untouched until the monitor returns.
+        self.suspended = set()
         self.active = False
         self.monitor = None
         self.workspaces = set()
@@ -286,6 +289,7 @@ class Controller:
                 "profile": self.settings.profile(ws), "auto": self.settings.auto,
                 "presets": self.settings.presets,
                 "auto_running": self.auto_running,
+                "suspended": sorted(self.suspended),
                 "profiles": {str(w): self.settings.profile(w) for w in
                              self.workspaces | {int(k) for k in self.settings.profiles}},
                 "error": self.error}
@@ -300,9 +304,17 @@ class Controller:
             return None, None
         return monitor, ws
 
-    def activate(self):
+    def activate(self, workspace=None):
+        """Activate the focused workspace, or a given one that lives on a live monitor."""
         snap = self.hypr.snapshot()
         monitor, ws = self.current_workspace(snap)
+        focus = True
+        if workspace is not None and workspace != ws:
+            name = next((w["monitor"] for w in snap["workspaces"] if w["id"] == workspace), None)
+            monitor = next((m for m in snap["monitors"] if m["name"] == name), None)
+            if monitor is None:
+                return  # Not on a live monitor yet; retried on a later tick.
+            ws, focus = workspace, False
         if ws is None:
             raise ValueError("Activate on a numbered workspace")
         if ws in self.workspaces:
@@ -327,6 +339,7 @@ class Controller:
             self.locations = {identity(c): (c["monitor"], c["workspace"]["id"])
                               for c in snap["clients"]}
         self.active, self.error = True, ""
+        self.settings.remember([ws])
         candidates = sorted((c for c in snap["clients"] if eligible(c)
                              and c["workspace"]["id"] == ws and c["monitor"] == monitor["id"]),
                             key=lambda c: (c.get("focusHistoryID", 999999) < 0,
@@ -334,7 +347,7 @@ class Controller:
         target = ws
         for c in candidates:
             target = self.admit(c, target, follow=False)
-        if candidates:
+        if candidates and focus:
             self.hypr.focus(candidates[0])
 
     def disable_workspace(self, ws):
@@ -350,7 +363,9 @@ class Controller:
         self.workspaces.discard(ws)
         self.workspace_monitors.pop(ws, None)
         self.layouts.pop(ws, None)
+        self.suspended.discard(ws)
         self.excluded_workspaces.add(ws)
+        self.settings.remember([ws], False)
         self.active = bool(self.workspaces)
         self.persist()
         if not self.active:
@@ -362,7 +377,7 @@ class Controller:
             self.error = ""
         _, ws = self.current_workspace()
         if name == "deactivate":
-            self.deactivate()
+            self.deactivate(forget=True)
         elif name == "activate":
             self.activate()
         elif name == "toggle":
@@ -415,7 +430,7 @@ class Controller:
         if key is None or key not in clients:
             return
         c, record = clients[key], self.records[key]
-        if c.get("fullscreen"):
+        if c.get("fullscreen") or record["workspace"] in self.suspended:
             return
         spatial = [s for s in SPATIAL_SLOTS if s in self.active_slots(record["workspace"])]
         index = spatial.index(record["slot"]) + (-1 if direction == "l" else 1)
@@ -489,7 +504,10 @@ class Controller:
         record = {"identity": list(identity(c)), "workspace": workspace,
                   "slot": slot, "last_place": 0, "attempts": 0}
         self.records[identity(c)] = record
+        # A pending restore from an earlier release must not undo this placement.
+        self.deferred.pop(identity(c), None)
         self.workspaces.add(workspace)
+        self.settings.remember([workspace])
         # Journal BEFORE mutating any window: crash recovery also covers partial work.
         self.persist()
         try:
@@ -537,7 +555,11 @@ class Controller:
         except Exception as e:
             self.error = "Could not restore a window: " + str(e)
 
-    def deactivate(self):
+    def deactivate(self, forget=False):
+        """Restore every managed window. Shutdown keeps the remembered workspaces
+        for the next start; an explicit deactivate command (forget) clears them."""
+        if forget:
+            self.settings.remember(self.workspaces | self.settings.enabled, False)
         self.active = False
         self.auto_running = False
         self.error = ""
@@ -553,6 +575,7 @@ class Controller:
         self.workspace_monitors.clear()
         self.layouts.clear()
         self.excluded_workspaces.clear()
+        self.suspended.clear()
         self.monitor = None
         self.pending_opens.clear()
 
@@ -571,6 +594,23 @@ class Controller:
         if changed:
             self.persist()
 
+    def restore_remembered(self, snap, current):
+        """Re-activate remembered workspaces once they exist on a live monitor."""
+        live = {m["name"] for m in snap["monitors"]}
+        existing = {w["id"] for w in snap["workspaces"] if w["monitor"] in live}
+        changed = False
+        for ws in sorted(self.settings.enabled):
+            if (ws in self.workspaces or ws in self.excluded_workspaces
+                    or (ws not in existing and ws != current)):
+                continue
+            try:
+                self.activate(ws)
+            except Exception as e:
+                self.error = "Could not restore workspace " + str(ws) + ": " + str(e)
+                break
+            changed = True
+        return changed
+
     def reconcile(self):
         snap = self.hypr.snapshot()
         if not snap["monitors"]:
@@ -584,6 +624,8 @@ class Controller:
                 and current not in self.excluded_workspaces):
             self.activate()
             snap = self.hypr.snapshot()
+        if self.restore_remembered(snap, current):
+            snap = self.hypr.snapshot()
         if not self.active:
             return
         monitors = {m["name"]: m for m in snap["monitors"]}
@@ -594,9 +636,11 @@ class Controller:
             assigned = next((w["monitor"] for w in snap["workspaces"] if w["id"] == ws),
                             self.workspace_monitors[ws])
             if assigned not in monitors:
-                self.disable_workspace(ws)
-                self.error = "Monitor disconnected; its workspaces restored to normal tiling"
+                # Its monitor slept or was unplugged and the workspace has not
+                # moved to a live one yet. Keep the layout and resume later.
+                self.suspended.add(ws)
                 continue
+            self.suspended.discard(ws)
             self.workspace_monitors[ws] = assigned
             self.layouts[ws] = self.hypr.dimensions(monitors[assigned], self.settings.profile(ws)["ratios"])
         if not self.active:
@@ -613,6 +657,9 @@ class Controller:
             if (ws not in self.workspaces
                     or c.get("pinned") or c.get("grouped")):
                 self.release(c)
+                continue
+            if ws in self.suspended:
+                record["attempts"] = 0
                 continue
             if ws != record["workspace"] or record["slot"] not in self.active_slots(ws):
                 slot = self.vacant(ws)
@@ -670,6 +717,7 @@ class Controller:
         destinations = {}
         for c in new:
             if (eligible(c) and c["workspace"]["id"] in self.workspaces
+                    and c["workspace"]["id"] not in self.suspended
                     and c["monitor"] == monitors[self.workspace_monitors[c["workspace"]["id"]]]["id"]):
                 source = c["workspace"]["id"]
                 follow = (identity(c) not in self.seen or

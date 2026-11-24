@@ -127,7 +127,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(self.c.workspaces, {1})
         self.switch(3)
         self.assertEqual(self.c.workspaces, {1, 3})
-        self.c.deactivate()
+        self.c.command({"command": "deactivate"})
         self.switch(1)
         self.assertFalse(self.c.active)
         self.assertFalse(self.c.auto_running)
@@ -205,10 +205,67 @@ class LayoutTests(unittest.TestCase):
         self.hypr.monitors.pop()
         # A disconnected monitor's workspace may temporarily retain its name.
         self.hypr.extra_workspaces = [{"id": 2, "monitor": "HDMI-A-1"}]
-        self.hypr.clients.pop()
+        self.tick()
+        # Suspended, not released: its windows are left alone until it returns.
+        self.assertEqual(self.c.workspaces, {1, 2})
+        self.assertEqual(self.c.suspended, {2})
+        self.assertTrue(self.hypr.clients[0]["floating"])
+        self.assertTrue(self.hypr.clients[1]["floating"])
+        self.hypr.monitors.append(second)
+        self.hypr.extra_workspaces = []
+        self.tick()
+        self.assertEqual(self.c.suspended, set())
+        self.assertGreater(self.hypr.clients[1]["at"][0], 3440)
+
+    def restart(self):
+        """Simulate a shell reload or login: shutdown, then a fresh controller."""
+        self.c.deactivate()
+        self.settings = Settings(self.path / "settings.json")
+        self.c = Controller(self.hypr, Journal(self.path / "journal.json"),
+                            lambda: self.now, self.settings)
+
+    def test_enabled_workspaces_survive_restart(self):
+        self.hypr.clients = [window(1), window(2), window(3, 3)]
+        self.c.command({"command": "toggle"})
+        self.switch(3)
+        self.c.command({"command": "toggle"})
+        self.assertEqual(self.settings.enabled, {1, 3})
+        self.restart()
+        self.assertFalse(any(c["floating"] for c in self.hypr.clients))
+        self.hypr.calls.clear()
+        self.tick()
+        self.assertEqual(self.c.workspaces, {1, 3})
+        self.assertTrue(all(c["floating"] for c in self.hypr.clients))
+        # Background restore of workspace 1 must not steal focus from 3.
+        self.assertEqual([c for c in self.hypr.calls if c[0] == "focus"], [("focus", "0x3")])
+        self.assertEqual(self.hypr.clients[0]["size"][0], self.c.layouts[1]["center"][2])
+
+    def test_remembered_workspace_waits_until_it_exists(self):
+        self.hypr.clients = [window(1)]
+        self.c.command({"command": "toggle"})
+        self.switch(4)
+        self.c.command({"command": "toggle"})  # Empty workspace 4.
+        self.restart()
+        self.switch(1)
+        self.assertEqual(self.c.workspaces, {1})
+        self.switch(4)
+        self.assertEqual(self.c.workspaces, {1, 4})
+
+    def test_toggle_off_and_deactivate_forget_workspaces(self):
+        self.hypr.clients = [window(1), window(2, 2)]
+        self.c.command({"command": "toggle"})
+        self.switch(2)
+        self.c.command({"command": "toggle"})
+        self.c.command({"command": "toggle"})
+        self.assertEqual(self.settings.enabled, {1})
+        self.restart()
         self.tick()
         self.assertEqual(self.c.workspaces, {1})
-        self.assertTrue(self.hypr.clients[0]["floating"])
+        self.c.command({"command": "deactivate"})
+        self.assertEqual(self.settings.enabled, set())
+        self.restart()
+        self.tick()
+        self.assertFalse(self.c.active)
 
     def test_activation_does_not_lose_pending_open_on_another_workspace(self):
         self.hypr.clients = [window(1)]
@@ -236,7 +293,8 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             for value in ({"auto": "yes"}, {"workspaces": {"1": {"overflow": "close"}}},
-                          {"workspaces": {"-1": {}}}):
+                          {"workspaces": {"-1": {}}}, {"enabled": "1"},
+                          {"enabled": [0]}, {"enabled": [True]}, {"enabled": [1.5]}):
                 path.write_text(json.dumps(value))
                 with self.assertRaises(ValueError):
                     Settings(path)

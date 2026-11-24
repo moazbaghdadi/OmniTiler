@@ -85,7 +85,7 @@ def install():
     # Python helper runs, but old widget handlers and IPC methods remain live.
     # Restart only after the enabled bar entry has been persisted.
     run("omarchy", "restart", "shell", timeout=60)
-    print("Installed OmniTiler beside the clock. Tiling starts off.")
+    print("Installed OmniTiler beside the clock. Remembered workspaces are re-tiled.")
 
 
 def remove():

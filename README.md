@@ -43,8 +43,18 @@ move existing windows back or redistribute existing stacks.
 Middle-click enables automatic tiling as you visit normal numbered workspaces.
 Turning a workspace off excludes it for this session until you explicitly
 activate it or toggle automatic mode again. Turning automatic mode off keeps
-already-managed workspaces enabled. Tiling starts off after login or shell/plugin
-reload; saved preferences are reused on the next activation.
+already-managed workspaces enabled.
+
+Enabled workspaces are remembered in `~/.config/omnitiler/settings.json` and
+re-tiled automatically after login, shell/plugin reload, or reinstall. A
+remembered workspace resumes as soon as it exists again, for example when you
+first open a window on it. Turning a workspace off forgets it; IPC `deactivate`
+forgets all of them.
+
+If a monitor sleeps or is unplugged, its workspaces are suspended rather than
+turned off; this includes HDMI monitors that disconnect when they sleep.
+OmniTiler leaves their windows alone until the monitor returns, or Hyprland
+moves the workspaces to another monitor, then re-tiles them.
 
 ## Requirements
 
@@ -70,7 +80,8 @@ omarchy plugin enable theboxer71.omnitiler --section center --after omarchy.cloc
 ```
 
 The second command places the icon immediately beside the centered clock.
-Enabling the plugin loads its toggle; window tiling starts off until clicked.
+Enabling the plugin loads its toggle; window tiling starts off until clicked
+on a workspace, which is then remembered.
 For a Git-managed installation, update or remove with:
 
 ```sh
@@ -96,10 +107,10 @@ Run the same command to update a local installation.
 
 The installer restarts the Omarchy shell after enabling the plugin so updated
 QML click handlers and IPC methods take effect. The bar briefly disappears and
-tiling starts off. A plugin rescan alone can leave the old QML interface cached
+remembered workspaces are re-tiled. A plugin rescan alone can leave the old QML interface cached
 while the new Python helper is already running. If an earlier installation has
 working tiling but missing right/middle-click actions, run `omarchy restart shell`
-once and enable tiling again.
+once.
 
 Use either the Git-managed installation or the local development installer;
 the latter installs a copy and is updated by rerunning `manage.py install`.
@@ -111,7 +122,8 @@ the latter installs a copy and is updated by rerunning `manage.py install`.
 - **Middle click:** toggle automatic activation of visited workspaces.
 - **Hover:** see current ratios, overflow mode, managed workspaces, window counts,
   and any placement error.
-- **IPC `deactivate`:** restore all managed workspaces and stop automatic activation.
+- **IPC `deactivate`:** restore all managed workspaces, forget the remembered
+  ones, and stop automatic activation.
 
 ### Omarchy keyboard shortcuts
 

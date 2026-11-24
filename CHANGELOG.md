@@ -2,6 +2,12 @@
 
 ## 0.3.1 — fork, unreleased
 
+- Keep workspaces enabled when their monitor sleeps or disconnects: suspend
+  them and resume once the monitor returns. Previously, HDMI monitors that
+  hotplug-disconnect while asleep came back with tiling turned off.
+- Remember enabled workspaces in `settings.json` and re-tile them after login,
+  shell/plugin reload, or reinstall. Turning a workspace off forgets it; IPC
+  `deactivate` forgets all of them.
 - Fix a Hyprland crash when the screen locks and every display powers off:
   OmniTiler no longer changes a window's floating state unless the window is
   on a live monitor, checked inside the compositor in the same call. With no

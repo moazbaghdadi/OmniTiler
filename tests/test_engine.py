@@ -53,9 +53,11 @@ class FakeHypr:
     def snapshot(self):
         names = {m["id"]: m["name"] for m in self.monitors}
         assignments = {c["workspace"]["id"]: names.get(c["monitor"], "DP-2") for c in self.clients}
+        # extra_workspaces override client-derived assignments with the same ID.
+        assignments.update({w["id"]: w["monitor"] for w in self.extra_workspaces})
         workspaces = [{"id": n, "monitor": name} for n, name in assignments.items()]
         return copy.deepcopy(dict(clients=self.clients, monitors=self.monitors,
-                                  workspaces=workspaces + self.extra_workspaces))
+                                  workspaces=workspaces))
 
     def rules(self):
         return self.workspace_rules
@@ -205,8 +207,36 @@ class ControllerTests(unittest.TestCase):
         self.hypr.monitors.append(other)
         del self.hypr.monitors[0]
         self.tick()
-        self.assertFalse(self.c.active)
-        self.assertFalse(self.hypr.clients[0]["floating"])
+        # The workspace is suspended, not released, while its monitor is gone.
+        self.assertTrue(self.c.active)
+        self.assertEqual(self.c.suspended, {1})
+        self.assertTrue(self.hypr.clients[0]["floating"])
+        # Hyprland moves it to the remaining monitor: it resumes there.
+        self.hypr.clients[0]["monitor"] = 1
+        self.tick()
+        self.assertEqual(self.c.suspended, set())
+        self.assertEqual(self.c.workspace_monitors[1], "HDMI-A-1")
+        self.assertIn(identity(self.hypr.clients[0]), self.c.records)
+
+    def test_monitor_hotplug_keeps_workspace_enabled(self):
+        # An HDMI monitor that sleeps disconnects; on wake, Hyprland can report
+        # it again while the workspace still sits on its fallback output.
+        self.hypr.clients = [window(1)]
+        self.c.activate()
+        self.hypr.monitors.clear()
+        self.tick()
+        self.hypr.monitors.append(copy.deepcopy(MONITOR))
+        self.hypr.extra_workspaces = []
+        self.hypr.extra_workspaces = [{"id": 1, "monitor": "FALLBACK"}]
+        self.hypr.calls.clear()
+        self.tick()
+        self.assertEqual(self.hypr.calls, [])
+        self.assertEqual(self.c.workspaces, {1})
+        self.assertEqual(self.c.suspended, {1})
+        self.hypr.extra_workspaces = []
+        self.tick()
+        self.assertEqual(self.c.suspended, set())
+        self.assertEqual(self.hypr.clients[0]["size"][0], self.c.rectangles["center"][2])
 
     def test_no_outputs_pauses_without_touching_windows(self):
         # Locking can power every display off; Hyprland then has no outputs
@@ -229,7 +259,7 @@ class ControllerTests(unittest.TestCase):
         self.hypr.clients = [window(1)]
         self.c.activate()
         self.hypr.no_monitor = True
-        self.c.deactivate()
+        self.c.deactivate(forget=True)
         self.assertFalse(self.c.active)
         self.assertTrue(self.hypr.clients[0]["floating"])
         self.assertEqual([tuple(r["identity"]) for r in self.journal.load()],
