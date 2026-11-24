@@ -6,7 +6,7 @@ import unittest
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine import Controller, Journal, css_gaps, geometry, identity
+from engine import Controller, Hyprland, Journal, NoMonitor, css_gaps, geometry, identity
 from settings import Settings
 
 
@@ -30,6 +30,7 @@ class FakeHypr:
         self.extra_workspaces = []
         self.calls = []
         self.fail = False
+        self.no_monitor = False
         self.stubborn = False
         self.workspace_rules = []
 
@@ -72,6 +73,8 @@ class FakeHypr:
         self.calls.append(("float", c["address"], enabled))
         if self.fail:
             raise RuntimeError("compositor unavailable")
+        if self.no_monitor:
+            raise NoMonitor("The window has no live monitor")
         if self.live(c):
             self.live(c)["floating"] = enabled
 
@@ -197,10 +200,58 @@ class ControllerTests(unittest.TestCase):
         self.hypr.monitors[0]["scale"] = 1.25
         self.tick()
         self.assertEqual(self.hypr.clients[0]["size"][0], self.c.rectangles["center"][2])
-        self.hypr.monitors.clear()
+        other = dict(copy.deepcopy(MONITOR), id=1, name="HDMI-A-1", focused=False,
+                     activeWorkspace={"id": 5, "name": "5"})
+        self.hypr.monitors.append(other)
+        del self.hypr.monitors[0]
         self.tick()
         self.assertFalse(self.c.active)
         self.assertFalse(self.hypr.clients[0]["floating"])
+
+    def test_no_outputs_pauses_without_touching_windows(self):
+        # Locking can power every display off; Hyprland then has no outputs
+        # and crashes if a window's floating state changes (0.56.2).
+        self.hypr.clients = [window(1)]
+        self.c.activate()
+        layout = dict(self.c.layouts)
+        self.hypr.monitors.clear()
+        self.hypr.calls.clear()
+        self.tick()
+        self.assertEqual(self.hypr.calls, [])
+        self.assertTrue(self.c.active)
+        self.assertEqual(self.c.layouts, layout)
+        self.hypr.monitors.append(copy.deepcopy(MONITOR))
+        self.tick()
+        self.assertTrue(self.hypr.clients[0]["floating"])
+        self.assertIn(identity(self.hypr.clients[0]), self.c.records)
+
+    def test_release_without_monitor_is_deferred(self):
+        self.hypr.clients = [window(1)]
+        self.c.activate()
+        self.hypr.no_monitor = True
+        self.c.deactivate()
+        self.assertFalse(self.c.active)
+        self.assertTrue(self.hypr.clients[0]["floating"])
+        self.assertEqual([tuple(r["identity"]) for r in self.journal.load()],
+                         [identity(self.hypr.clients[0])])
+        self.hypr.no_monitor = False
+        self.tick()
+        self.assertFalse(self.hypr.clients[0]["floating"])
+        self.assertEqual(self.journal.load(), [])
+
+    def test_startup_recovery_without_monitor_waits(self):
+        self.hypr.clients = [window(1)]
+        self.c.activate()
+        self.c.deactivate = None  # Simulate a controller killed mid-session.
+        self.hypr.no_monitor = True
+        replacement = Controller(self.hypr, self.journal, lambda: self.now)
+        self.assertTrue(self.hypr.clients[0]["floating"])
+        self.assertTrue(self.journal.load())
+        self.hypr.no_monitor = False
+        self.now += 2
+        replacement.reconcile()
+        self.assertFalse(self.hypr.clients[0]["floating"])
+        self.assertEqual(self.journal.load(), [])
 
     def test_failure_preserves_journal_for_retry(self):
         self.hypr.clients = [window(1)]
@@ -297,3 +348,23 @@ class ControllerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DispatchGuardTests(unittest.TestCase):
+    def backend(self, reply):
+        hypr = Hyprland.__new__(Hyprland)
+        hypr.sent = []
+        hypr.request = lambda command: (hypr.sent.append(command), reply)[1]
+        return hypr
+
+    def test_window_dispatch_checks_live_monitor_in_compositor(self):
+        hypr = self.backend("ok")
+        hypr.float(window(1), False)
+        code = hypr.sent[0]
+        self.assertIn("hl.get_monitors()", code)
+        self.assertLess(code.index("omnitiler:no-monitor"), code.index("hl.dsp.window.float"))
+
+    def test_no_monitor_reply_raises(self):
+        hypr = self.backend('error: [string "local w = ..."]:1: omnitiler:no-monitor')
+        with self.assertRaises(NoMonitor):
+            hypr.float(window(1), False)

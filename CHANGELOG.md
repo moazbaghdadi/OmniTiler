@@ -2,6 +2,11 @@
 
 ## 0.3.1 — fork, unreleased
 
+- Fix a Hyprland crash when the screen locks and every display powers off:
+  OmniTiler no longer changes a window's floating state unless the window is
+  on a live monitor, checked inside the compositor in the same call. With no
+  outputs it pauses and keeps its layouts; restores that could not run wait in
+  the recovery journal until a monitor returns, instead of failing startup.
 - Allow 0% to disable a column, including two-column and single-column layouts.
 - Remove disabled columns from geometry, gaps, allocation, overflow capacity,
   keyboard navigation, and the settings preview.

@@ -18,6 +18,17 @@ import time
 from settings import Settings, ratios
 
 SLOTS = ("center", "left", "right")
+NO_MONITOR = "omnitiler:no-monitor"
+
+
+class NoMonitor(RuntimeError):
+    """The window is not on a live output, e.g. every monitor is asleep or unplugged.
+
+    Hyprland moves such windows to its internal fallback output, and changing
+    their floating state there trips a compositor assertion that crashes the
+    whole session (seen with Hyprland 0.56.2 when the screen locked and the
+    displays powered off). Callers postpone the change until an output returns.
+    """
 SPATIAL_SLOTS = ("left", "center", "right")
 
 
@@ -148,10 +159,19 @@ class Hyprland:
             addr, stable, pid = identity(client)
             if not re.fullmatch(r"0x[0-9a-fA-F]+", addr) or not re.fullmatch(r"[0-9a-fA-F]+", stable):
                 raise ValueError("Invalid Hyprland window identity")
+            # Check the output inside the compositor, in the same call: outputs
+            # can vanish between the JSON snapshot and this dispatch.
             code = (f'local w = hl.get_window("address:{addr}"); '
-                    f'if w and w.stable_id == tonumber("{stable}", 16) and w.pid == {int(pid)} '
-                    f'then {code} end')
+                    f'if w and w.stable_id == tonumber("{stable}", 16) and w.pid == {int(pid)} then '
+                    'local m = w.monitor; local live = false; '
+                    'if m and m.name ~= "FALLBACK" then '
+                    'for _, o in ipairs(hl.get_monitors()) do '
+                    'if o.name == m.name then live = true; break end end end; '
+                    f'if not live then error("{NO_MONITOR}") end; '
+                    f'{code} end')
         result = self.request("/eval " + code).strip()
+        if NO_MONITOR in result:
+            raise NoMonitor("The window has no live monitor")
         if result != "ok":
             raise RuntimeError(result[:250] or "Empty compositor response")
 
@@ -220,10 +240,13 @@ class Controller:
         self.error = ""
         self.rectangles = {}
         self.pending_opens = []
+        # Released windows whose restore must wait for a live monitor; kept in
+        # the journal so a replacement controller can finish the job.
+        self.deferred = {}
         self.restore_journal()
 
     def persist(self):
-        self.journal.save(self.records.values())
+        self.journal.save([*self.records.values(), *self.deferred.values()])
         if self.active:
             self.hypr.sync_hotkeys(self.records.values())
 
@@ -239,9 +262,11 @@ class Controller:
             if c:
                 try:
                     self.hypr.float(c, False)
+                except NoMonitor:
+                    self.deferred[tuple(record["identity"])] = record
                 except Exception:
                     remaining.append(record)
-        self.journal.save(remaining)
+        self.journal.save([*remaining, *self.deferred.values()])
         if remaining:
             raise RuntimeError("Could not restore interrupted tiling; retry when Hyprland is available")
 
@@ -500,7 +525,13 @@ class Controller:
         key = identity(c)
         try:
             if key in self.records:
-                self.hypr.float(c, False)
+                try:
+                    self.hypr.float(c, False)
+                except NoMonitor:
+                    self.deferred[key] = self.records.pop(key)
+                    self.persist()
+                    self.error = "No monitor available; the window is restored when one returns"
+                    return
                 del self.records[key]
                 self.persist()
         except Exception as e:
@@ -525,8 +556,29 @@ class Controller:
         self.monitor = None
         self.pending_opens.clear()
 
+    def retry_deferred(self, snap):
+        clients = {identity(c): c for c in snap["clients"]}
+        changed = False
+        for key in list(self.deferred):
+            c = clients.get(key)
+            try:
+                if c:
+                    self.hypr.float(c, False)
+            except Exception:
+                continue  # Still unavailable; keep it for the next tick.
+            del self.deferred[key]
+            changed = True
+        if changed:
+            self.persist()
+
     def reconcile(self):
         snap = self.hypr.snapshot()
+        if not snap["monitors"]:
+            # Every output is gone (displays asleep or unplugged). Touch no
+            # window and keep the layouts, so tiling resumes when one returns.
+            return
+        if self.deferred:
+            self.retry_deferred(snap)
         _, current = self.current_workspace(snap)
         if (self.auto_running and current is not None and current not in self.workspaces
                 and current not in self.excluded_workspaces):
@@ -603,6 +655,8 @@ class Controller:
                 continue
             try:
                 self.place(c, record)
+            except NoMonitor:
+                continue  # Its output vanished mid-tick; retry once it returns.
             except Exception as e:
                 self.error = "Placement failed: " + str(e)
                 self.release(c)
